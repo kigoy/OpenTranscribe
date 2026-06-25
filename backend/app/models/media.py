@@ -346,6 +346,15 @@ class SpeakerProfile(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    voice_match_threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
+    voice_score_mean: Mapped[float | None] = mapped_column(Float, nullable=True)
+    voice_score_stddev: Mapped[float | None] = mapped_column(Float, nullable=True)
+    voice_calibration_samples: Mapped[int | None] = mapped_column(Integer, default=0)
+    voice_calibration_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    voice_calibrated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Avatar image path in MinIO
     avatar_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
