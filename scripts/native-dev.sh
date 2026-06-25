@@ -49,7 +49,11 @@ load_env() {
   export COMPUTE_TYPE="${COMPUTE_TYPE:-int8}"
   export WHISPER_MODEL="${WHISPER_MODEL:-base}"
   export WHISPER_COMPUTE_TYPE="${WHISPER_COMPUTE_TYPE:-int8}"
-  export ENABLE_DIARIZATION="${ENABLE_DIARIZATION:-false}"
+  # Local MLX transcription (Apple Silicon GPU via Metal) is the native ASR path.
+  export LOCAL_ASR_BACKEND="${LOCAL_ASR_BACKEND:-mlx-whisper}"
+  # Diarization runs on the existing PyAnnote fork (CPU/MPS, no CUDA) so the Auris
+  # second-pass has real speaker segments to name.
+  export ENABLE_DIARIZATION="${ENABLE_DIARIZATION:-true}"
   export FRONTEND_URL="${FRONTEND_URL:-http://127.0.0.1:5173}"
 }
 
