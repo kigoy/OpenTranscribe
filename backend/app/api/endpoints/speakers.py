@@ -300,6 +300,30 @@ def _get_profile_suggestions(raw_cross_video_matches: list[dict[str, Any]]) -> l
     ]
 
 
+def _native_gallery_suggestion(speaker: Speaker) -> list[dict[str, Any]]:
+    """Surface a native sherpa-512 gallery match as a clickable profile suggestion.
+
+    The native gate links the matched profile + confidence + suggested_name directly on the
+    speaker (there is no OpenSearch cross-video record on this path), so when the smart-
+    suggestion service returns nothing, present that gated match as a profile suggestion the
+    user can accept in one click. Skipped once the speaker is already named.
+    """
+    if speaker.display_name or not (
+        speaker.suggested_name and speaker.confidence and speaker.profile_id
+    ):
+        return []
+    conf = float(speaker.confidence)
+    return [
+        {
+            "name": str(speaker.suggested_name),
+            "confidence": conf,
+            "confidence_percentage": f"{round(conf * 100)}%",
+            "suggestion_type": "voice_match",
+            "reason": "Voice match to an enrolled speaker",
+        }
+    ]
+
+
 def _compute_suggested_name(speaker: Speaker) -> str | None:
     """Return the speaker's suggested name if available."""
     return str(speaker.suggested_name) if speaker.suggested_name else None
@@ -498,6 +522,8 @@ def _process_single_speaker(
 
     # Get profile suggestions (all non-LLM suggestions)
     profile_suggestions = _get_profile_suggestions(raw_cross_video_matches)
+    if not profile_suggestions:
+        profile_suggestions = _native_gallery_suggestion(speaker)
 
     # Cross-video matches: only populated via cross-media API for labeled speakers
     cross_video_matches: list[dict[str, Any]] = []
@@ -547,6 +573,8 @@ def _process_single_speaker_with_suggestions(
 
     raw_cross_video_matches = SmartSpeakerSuggestionService.format_for_api(smart_suggestions)
     profile_suggestions = _get_profile_suggestions(raw_cross_video_matches)
+    if not profile_suggestions:
+        profile_suggestions = _native_gallery_suggestion(speaker)
     cross_video_matches: list[dict[str, Any]] = []
     suggested_name = _compute_suggested_name(speaker)
     suggestion_source = _get_suggestion_source(speaker)
