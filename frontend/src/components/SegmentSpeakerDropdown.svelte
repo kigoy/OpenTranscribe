@@ -61,6 +61,27 @@
     }
   }
 
+  // Accept a gallery/voice-match suggestion: name the whole speaker cluster (display_name),
+  // not just this segment. Reuses the speakerCreated refresh path so the rename flows back
+  // down from the backend.
+  async function handleAcceptSuggestion(speaker: Speaker) {
+    if (!speaker?.suggested_name) return;
+    try {
+      const response = await axiosInstance.put(`/speakers/${speaker.uuid}`, {
+        display_name: speaker.suggested_name
+      });
+      dispatch('speakerCreated', { speaker: response.data });
+      closeDropdown();
+    } catch (error) {
+      console.error('Failed to accept speaker suggestion:', error);
+    }
+  }
+
+  // A speaker is still unnamed when it has no human display name (blank or SPEAKER_##).
+  function isUnnamed(speaker: Speaker): boolean {
+    return !speaker.display_name || /^SPEAKER_\d+$/.test(speaker.display_name);
+  }
+
   // Create portal container on mount
   onMount(() => {
     portalContainer = document.createElement('div');
@@ -259,6 +280,36 @@
     header.textContent = $t('speaker.assignSpeaker');
     menu.appendChild(header);
 
+    // Gallery suggestion — one-click "name this speaker" when the current speaker has an
+    // unconfirmed voice match and isn't named yet. Names the cluster, not just the segment.
+    const currentSpeaker = speakers.find((s) => s.uuid === currentSpeakerUuid);
+    if (currentSpeaker && currentSpeaker.suggested_name && isUnnamed(currentSpeaker)) {
+      const acceptBtn = document.createElement('button');
+      acceptBtn.className = 'dropdown-item accept-suggestion-btn';
+
+      const acceptOption = document.createElement('div');
+      acceptOption.className = 'speaker-option';
+      acceptOption.appendChild(createCheckmarkSvg());
+
+      const acceptSpan = document.createElement('span');
+      const pct = currentSpeaker.confidence
+        ? ` · ${Math.round(currentSpeaker.confidence * 100)}%`
+        : '';
+      acceptSpan.textContent = `${currentSpeaker.suggested_name}${pct}`;
+      acceptOption.appendChild(acceptSpan);
+
+      acceptBtn.appendChild(acceptOption);
+      acceptBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleAcceptSuggestion(currentSpeaker);
+      });
+      menu.appendChild(acceptBtn);
+
+      const sDivider = document.createElement('div');
+      sDivider.className = 'dropdown-divider';
+      menu.appendChild(sDivider);
+    }
+
     // "Create New Speaker" button — top of list for quick access
     if (mediaFileUuid) {
       const nextSpeakerName = getNextSpeakerName();
@@ -437,6 +488,20 @@
 
     .speaker-dropdown-portal .create-speaker-btn svg {
       color: var(--primary-color, #3b82f6);
+      margin-right: 4px;
+    }
+
+    .speaker-dropdown-portal .accept-suggestion-btn {
+      color: var(--success-color, #16a34a);
+      font-weight: 600;
+    }
+
+    .speaker-dropdown-portal .accept-suggestion-btn:hover {
+      background: rgba(22, 163, 74, 0.12);
+    }
+
+    .speaker-dropdown-portal .accept-suggestion-btn svg {
+      color: var(--success-color, #16a34a);
       margin-right: 4px;
     }
   </style>

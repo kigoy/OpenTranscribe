@@ -9,6 +9,7 @@ export interface Speaker {
   uuid: string; // Public UUID identifier
   name: string; // Original speaker ID (e.g., "SPEAKER_01")
   display_name?: string; // User-assigned display name
+  suggested_name?: string; // Gallery/voice-match suggestion, pending user confirmation
   verified?: boolean;
   confidence?: number;
   segment_count?: number; // Number of segments assigned to this speaker
