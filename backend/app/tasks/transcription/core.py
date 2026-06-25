@@ -953,6 +953,60 @@ def _run_engine_pipeline(
         local_wav_path,
     )
 
+    if settings.LOCAL_ASR_BACKEND == "mlx-whisper":
+        from app.services.mlx_whisper_asr import transcribe_file
+
+        send_progress_notification(ctx.user_id, ctx.file_id, 0.40, "Running local mlx-whisper")
+        mlx_result = transcribe_file(
+            local_wav_path,
+            model=whisper_model or settings.WHISPER_MODEL,
+            language=source_language,
+            translate_to_english=bool(translate_to_english),
+        )
+
+        if disable_diarization:
+            mlx_result.setdefault("diarization_source", "off")
+            return mlx_result
+
+        # Diarization enabled: run pyannote on the mlx-whisper ASR output,
+        # then finalize with speaker assignment + sherpa-512 embedding extraction.
+        from app.transcription import Engine
+        from app.transcription import EngineConfig
+        from app.transcription.engine.job import RawTranscriptResult
+
+        send_progress_notification(ctx.user_id, ctx.file_id, 0.52, "Analyzing speaker patterns")
+        engine_config = EngineConfig.from_environment()
+        engine = Engine(engine_config)
+
+        raw_segments = mlx_result.get("segments", [])
+        audio_duration = 0.0
+        if raw_segments:
+            audio_duration = float(raw_segments[-1].get("end", 0.0))
+
+        raw_transcript = RawTranscriptResult(
+            task_id=ctx.task_id,
+            audio_path="",
+            audio_duration_s=audio_duration,
+            language=mlx_result.get("language", source_language or "en"),
+            raw_segments=raw_segments,
+            local_wav_path=local_wav_path,
+            config_snapshot=engine_config.to_snapshot(),
+            stage_timings={},
+        )
+
+        def _diarize_progress(progress: float, message: str) -> None:
+            with session_scope() as db:
+                update_task_status(db, ctx.task_id, "in_progress", progress=progress)
+            send_progress_notification(ctx.user_id, ctx.file_id, progress, message)
+
+        raw_inference = engine.run_diarize_only(raw_transcript, progress_callback=_diarize_progress)
+        job_result = engine.run_cpu_finalize(raw_inference, progress_callback=_diarize_progress)
+        result = job_result.to_pipeline_dict()
+        result.setdefault("asr_provider", "local")
+        result.setdefault("asr_model", whisper_model or settings.WHISPER_MODEL)
+        result.setdefault("diarization_source", "provider")
+        return result
+
     with session_scope() as db:
         user_settings = _get_user_transcription_settings(db, ctx.user_id)
 
@@ -2354,6 +2408,9 @@ def _process_and_save_critical(
         "diarization_disabled": result.get("diarization_disabled", False),
         "downstream_tasks": preprocess_context.get("downstream_tasks"),
         "audio_temp_path": preprocess_context.get("audio_temp_path"),
+        # Decoded 16 kHz mono WAV on the shared volume — postprocess re-embeds each
+        # diarized speaker with the canonical sherpa-512 extractor for gallery gating.
+        "local_wav_path": preprocess_context.get("local_wav_path", ""),
     }
 
 
@@ -2492,10 +2549,16 @@ def transcribe_gpu_task(self, preprocess_context: dict) -> dict:
             # Process speakers, save to DB, release GPU
             gpu_result = _process_and_save_critical(ctx, result, preprocess_context)
 
-            # Shared-volume WAV is no longer needed after GPU stage finishes
-            from app.transcription.engine.audio_loader import cleanup_shared_volume_wav
+            # Shared-volume WAV is no longer needed after the GPU stage — EXCEPT on the
+            # SQLite backend, where postprocess re-embeds each diarized speaker with
+            # sherpa-512 from this decoded WAV for gallery gating. There it owns cleanup.
+            defer_wav_for_gallery = (
+                settings.SEARCH_BACKEND == "sqlite" and not disable_diarization
+            )
+            if not defer_wav_for_gallery:
+                from app.transcription.engine.audio_loader import cleanup_shared_volume_wav
 
-            cleanup_shared_volume_wav(local_wav_path)
+                cleanup_shared_volume_wav(local_wav_path)
 
             benchmark_timing.mark(task_id, "gpu_end")
             if isinstance(result, dict):
@@ -2753,6 +2816,25 @@ def _run_cpu_transcription(
     source_language, translate_to_english = _resolve_language_settings(
         ctx, source_language, translate_to_english
     )
+
+    # When mlx-whisper is the configured local ASR backend, use it instead of
+    # faster-whisper.  mlx-whisper runs efficiently on Apple Silicon (Metal/GPU)
+    # and does not need ctranslate2 or a CUDA runtime.
+    if settings.LOCAL_ASR_BACKEND == "mlx-whisper":
+        from app.services.mlx_whisper_asr import transcribe_file as _mlx_transcribe
+
+        send_progress_notification(ctx.user_id, ctx.file_id, 0.4, "Running mlx-whisper")
+        result = _mlx_transcribe(
+            audio_file_path,
+            model=whisper_model or settings.WHISPER_MODEL,
+            language=source_language,
+            translate_to_english=bool(translate_to_english),
+        )
+        result.setdefault("asr_provider", "local")
+        result.setdefault("asr_model", whisper_model or settings.WHISPER_MODEL)
+        result["diarization_disabled"] = True
+        result["diarization_source"] = "off"
+        return result
 
     # Get user's transcription tuning settings
     with session_scope() as db:

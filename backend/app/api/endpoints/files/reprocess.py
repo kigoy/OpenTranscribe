@@ -42,6 +42,12 @@ def clear_existing_transcription_data(db: Session, media_file: MediaFile) -> Non
         for segment in existing_segments:
             db.delete(segment)
 
+        # Flush the segment deletes before removing speakers. The session runs with
+        # autoflush off, so the bulk speaker delete below would otherwise execute
+        # while transcript_segment rows still reference speaker.id, tripping the
+        # FK constraint. Flushing here also fires the ORM cascade on each segment.
+        db.flush()
+
         # Clear any existing speaker data (extract UUIDs first, then bulk delete)
         speaker_uuids_to_clean = [
             str(r[0])

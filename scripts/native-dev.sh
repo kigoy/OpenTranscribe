@@ -54,6 +54,11 @@ load_env() {
   # Diarization runs on the existing PyAnnote fork (CPU/MPS, no CUDA) so the Auris
   # second-pass has real speaker segments to name.
   export ENABLE_DIARIZATION="${ENABLE_DIARIZATION:-true}"
+  # The diarizer reads HUGGINGFACE_TOKEN to load the gated pyannote pipeline from
+  # the local HF cache. Most setups export the token as HF_TOKEN; bridge it so the
+  # cached model resolves without a manual .env edit. Weights are already cached —
+  # this only authorizes reading them, no user audio leaves the box.
+  export HUGGINGFACE_TOKEN="${HUGGINGFACE_TOKEN:-${HF_TOKEN:-}}"
   export FRONTEND_URL="${FRONTEND_URL:-http://127.0.0.1:5173}"
 }
 

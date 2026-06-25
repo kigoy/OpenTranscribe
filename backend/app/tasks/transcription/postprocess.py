@@ -12,6 +12,7 @@ Part of the 3-stage chain: preprocess (CPU) → transcribe (GPU) → postprocess
 """
 
 import logging
+import os
 import time
 
 import numpy as np
@@ -149,16 +150,23 @@ def finalize_transcription(self, gpu_result: dict) -> dict:
                     user_id, file_id, 0.80, "Processing speaker identification"
                 )
 
-                if use_native and native_embeddings:
-                    _process_native_embeddings(
-                        file_id, user_id, task_id, native_embeddings, speaker_mapping
-                    )
+                # On the SQLite backend the gallery IS the canonical 512-d store and the
+                # OpenSearch matcher is retired. Re-embed each diarized speaker with sherpa-512
+                # and gate it against the gallery (the 256-d diarizer centroids can't match a
+                # 512-d gallery). Otherwise fall back to the OpenSearch native/v4 paths.
+                from app.core.config import settings as _settings
 
-                # Store v4 centroids if applicable
-                if native_embeddings and not use_native:
-                    _store_v4_centroids(
-                        file_id, file_uuid, user_id, native_embeddings, speaker_mapping
-                    )
+                if _settings.SEARCH_BACKEND == "sqlite":
+                    _suggest_speakers_from_gallery(file_id, gpu_result.get("local_wav_path", ""))
+                else:
+                    if use_native and native_embeddings:
+                        _process_native_embeddings(
+                            file_id, user_id, task_id, native_embeddings, speaker_mapping
+                        )
+                    if native_embeddings and not use_native:
+                        _store_v4_centroids(
+                            file_id, file_uuid, user_id, native_embeddings, speaker_mapping
+                        )
         else:
             logger.info(f"Skipping speaker embeddings for file {file_id} (diarization disabled)")
 
@@ -365,8 +373,6 @@ def _process_native_embeddings(
     from app.services.permission_service import PermissionService
     from app.services.speaker_matching_service import SpeakerMatchingService
 
-    step_start = time.perf_counter()
-
     db_embeddings: dict[int, np.ndarray] = {}
     for label, emb_list in native_embeddings_serialized.items():
         db_id = speaker_mapping.get(label)
@@ -391,9 +397,83 @@ def _process_native_embeddings(
         )
         update_task_status(db, task_id, "in_progress", progress=0.85)
 
-    logger.info(
-        f"TIMING: native speaker matching completed in {time.perf_counter() - step_start:.3f}s"
-    )
+
+def _suggest_speakers_from_gallery(file_id: int, wav_path: str) -> None:
+    """Re-embed each diarized speaker with sherpa-512 and suggest a gallery identity (gated).
+
+    Native path replacement for the retired OpenSearch matcher. The diarizer's own centroids are
+    256-d (wrong model/dim for the 512-d gallery), so each speaker is re-embedded with the
+    canonical sherpa-3dspeaker extractor over its own diarized audio, then gated against the
+    SQLite gallery. A gated match records suggested_name + confidence + profile_id (a confirmable
+    suggestion) — never display_name or verified. Best-effort: any failure logs and leaves the
+    transcription untouched (a recognition miss must never fail the file).
+    """
+    if not wav_path or not os.path.exists(wav_path):
+        logger.info("Gallery gate skipped for file %d: no decoded WAV available", file_id)
+        return
+    try:
+        from app.core.config import settings
+        from app.models.media import Speaker, TranscriptSegment
+        from app.services.auris_identity_native import assign_native_identities
+        from app.services.auris_speaker_embedding import Sherpa3SpeakerExtractor
+        from app.services.auris_speaker_reembed import embed_speakers_sherpa512
+        from app.services.sqlite_search.store import SQLiteSearchStore
+
+        with session_scope() as db:
+            rows = (
+                db.query(TranscriptSegment.speaker_id,
+                         TranscriptSegment.start_time, TranscriptSegment.end_time)
+                .filter(TranscriptSegment.media_file_id == file_id,
+                        TranscriptSegment.speaker_id.isnot(None))
+                .all()
+            )
+            windows: dict[int, list[tuple[float, float]]] = {}
+            for speaker_id, start, end in rows:
+                windows.setdefault(int(speaker_id), []).append((float(start), float(end)))
+            if not windows:
+                return
+
+            embeddings = embed_speakers_sherpa512(wav_path, windows, Sherpa3SpeakerExtractor())
+            if not embeddings:
+                return
+
+            store = SQLiteSearchStore(settings.SQLITE_SEARCH_PATH)
+            floors = {
+                "cosine_floor": settings.SPEAKER_NAME_ASSIGNMENT_THRESHOLD,
+                "asnorm_floor": settings.SPEAKER_ASNORM_THRESHOLD,
+                "margin_floor": settings.SPEAKER_ASNORM_MARGIN,
+            }
+
+            def _set_suggestion(speaker_id: int, name: str, cosine: float, profile_id: int | None) -> None:
+                speaker = db.get(Speaker, speaker_id)
+                if speaker is None:
+                    return
+                speaker.suggested_name = name
+                speaker.confidence = cosine
+                if profile_id:
+                    speaker.profile_id = profile_id
+
+            with store.connect() as conn:
+                summary = assign_native_identities(
+                    {sid: vec.tolist() for sid, vec in embeddings.items()},
+                    search=lambda vec: store.search_speaker_vectors(conn, vec, limit=8),
+                    floors=floors,
+                    set_suggestion=_set_suggestion,
+                )
+        logger.info(
+            "Gallery gate file %d: %d/%d speakers suggested",
+            file_id, len(summary["suggested"]), summary["total"],
+        )
+    except Exception as e:
+        logger.warning("Gallery gate failed for file %d (non-fatal): %s", file_id, e)
+    finally:
+        # The gpu stage defers cleanup of the decoded WAV to us on this path.
+        try:
+            from app.transcription.engine.audio_loader import cleanup_shared_volume_wav
+
+            cleanup_shared_volume_wav(wav_path)
+        except Exception:
+            pass
 
 
 def _store_v4_centroids(
