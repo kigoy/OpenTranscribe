@@ -127,9 +127,10 @@ celery_app.conf.update(
         "queue_order_strategy": "priority",
     },
     task_routes={
-        # GPU Queue - GPU-intensive AI tasks (concurrency=1, requires GPU)
+        # Native (no GPU worker): formerly GPU-routed AI tasks run on the CPU queue,
+        # so they are consumed by worker-cpu instead of stranding on an unstaffed queue.
         # See priority comment above for priority scheme
-        "transcription.process_file": {"queue": CeleryQueues.GPU},
+        "transcription.process_file": {"queue": CeleryQueues.CPU},
         # Pipeline chain tasks (3-stage: CPU preprocess → GPU transcribe → CPU postprocess)
         # NOTE: "transcription.gpu_transcribe" is intentionally NOT listed here so
         # dispatch.py can route it to either "gpu" or "cloud-asr" at call time.
@@ -139,11 +140,11 @@ celery_app.conf.update(
         "transcription.postprocess": {"queue": CeleryQueues.CPU},
         "transcription.enrich_and_dispatch": {"queue": CeleryQueues.CPU},
         "transcription.pipeline_error": {"queue": CeleryQueues.UTILITY},
-        "rediarize": {"queue": CeleryQueues.GPU},
-        "update_speaker_embedding_on_reassignment": {"queue": CeleryQueues.GPU},
-        "extract_v4_embeddings": {"queue": CeleryQueues.GPU},
-        "extract_v4_embeddings_batch": {"queue": CeleryQueues.GPU},
-        "speaker.recluster_all": {"queue": CeleryQueues.GPU},
+        "rediarize": {"queue": CeleryQueues.CPU},
+        "update_speaker_embedding_on_reassignment": {"queue": CeleryQueues.CPU},
+        "extract_v4_embeddings": {"queue": CeleryQueues.CPU},
+        "extract_v4_embeddings_batch": {"queue": CeleryQueues.CPU},
+        "speaker.recluster_all": {"queue": CeleryQueues.CPU},
         "speaker.cluster_for_file": {"queue": CeleryQueues.CPU},
         # Download Queue - Network I/O tasks (concurrency=3, no GPU)
         "download.media_url": {"queue": CeleryQueues.DOWNLOAD},
@@ -156,8 +157,8 @@ celery_app.conf.update(
         "analytics.analyze_transcript": {"queue": CeleryQueues.CPU},
         "detect_speaker_attributes": {"queue": CeleryQueues.CPU},
         "migrate_speaker_attributes": {"queue": CeleryQueues.CPU},
-        "detect_speaker_attributes_batch": {"queue": CeleryQueues.GPU},
-        "analyze_speakers_combined_batch": {"queue": CeleryQueues.GPU},
+        "detect_speaker_attributes_batch": {"queue": CeleryQueues.CPU},
+        "analyze_speakers_combined_batch": {"queue": CeleryQueues.CPU},
         "migrate_speakers_combined": {"queue": CeleryQueues.CPU},
         "system.update_gpu_stats": {"queue": CeleryQueues.CPU},
         "migrate_speaker_embeddings_to_v4": {"queue": CeleryQueues.CPU},
@@ -170,9 +171,9 @@ celery_app.conf.update(
         "search_index_maintenance": {"queue": CeleryQueues.CPU},
         "opensearch_orphan_cleanup": {"queue": CeleryQueues.CPU},
         "speaker_embedding_consistency_check": {"queue": CeleryQueues.CPU},
-        "speaker_embedding_consistency_repair_batch": {"queue": CeleryQueues.GPU},
+        "speaker_embedding_consistency_repair_batch": {"queue": CeleryQueues.CPU},
         "process_speaker_update_background": {"queue": CeleryQueues.CPU},
-        "extract_speaker_embeddings": {"queue": CeleryQueues.GPU},
+        "extract_speaker_embeddings": {"queue": CeleryQueues.CPU},
         # NLP Queue - LLM API calls (concurrency=4, no GPU needed)
         "ai.generate_summary": {"queue": CeleryQueues.NLP},
         "ai.identify_speakers": {"queue": CeleryQueues.NLP},
