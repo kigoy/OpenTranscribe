@@ -3,6 +3,7 @@ import datetime
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from typing import Any
@@ -475,6 +476,53 @@ def _try_parse_creation_date_from_fields(media_file, important_metadata: dict[st
             logger.warning(f"Could not parse {field_name}: {field_value} - {e}")
 
 
+# Recording date encoded in the original filename — for sources whose container
+# carries no embedded CreateDate (freshly re-downloaded HiNotes mp3s, HiDock
+# `.hda` exports), the meeting date survives only here. Most specific first so a
+# full timestamp wins over a bare date, and a date wins over a month.
+_FILENAME_DATE_PATTERNS = (
+    # HiDock export stem: 20260626-214143 -> YYYYMMDD-HHMMSS
+    (re.compile(r"(?<!\d)(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})(?!\d)"),
+     ("Y", "m", "d", "H", "M", "S")),
+    # ISO date prefix: 2025-06-09 -> YYYY-MM-DD
+    (re.compile(r"(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)"), ("Y", "m", "d")),
+    # ISO month: 2025-06 -> YYYY-MM (first of the month)
+    (re.compile(r"(?<!\d)(\d{4})-(\d{2})(?!\d)"), ("Y", "m")),
+)
+
+
+def _try_parse_creation_date_from_filename(media_file) -> None:
+    """Set creation_date from a date encoded in the original filename.
+
+    Tried after embedded metadata but before the file-mtime fallback: for a
+    re-downloaded recording the mtime is the download time, while the filename
+    (`2025-06-09 …`, `20260626-214143-Rec22`) still carries the real recording
+    date. No-op when a date was already found or the name has no in-range date.
+    """
+    if media_file.creation_date is not None:
+        return
+    name = getattr(media_file, "filename", None) or ""
+    for pattern, parts in _FILENAME_DATE_PATTERNS:
+        match = pattern.search(name)
+        if not match:
+            continue
+        values = dict(zip(parts, (int(group) for group in match.groups())))
+        year, month, day = values["Y"], values["m"], values.get("d", 1)
+        # Range-guard so an arbitrary digit run can't masquerade as a date.
+        if not (1990 <= year <= 2100 and 1 <= month <= 12 and 1 <= day <= 31):
+            continue
+        try:
+            media_file.creation_date = datetime.datetime(
+                year, month, day,
+                values.get("H", 0), values.get("M", 0), values.get("S", 0),
+                tzinfo=datetime.timezone.utc,
+            )
+        except ValueError:
+            continue  # impossible calendar date (e.g. 2025-02-30) or time
+        logger.info(f"Parsed creation_date from filename '{name}': {media_file.creation_date}")
+        return
+
+
 def _apply_creation_date_fallbacks(media_file, file_path: str) -> None:
     """Apply fallback chain for missing creation dates."""
     if media_file.creation_date is not None:
@@ -562,8 +610,10 @@ def update_media_file_metadata(
     # Duration
     _set_duration(media_file, important_metadata)
 
-    # Creation date with fallback chain
+    # Creation date with fallback chain: embedded metadata, then the date in the
+    # filename (real recording date for re-downloaded files), then file mtime.
     _try_parse_creation_date_from_fields(media_file, important_metadata)
+    _try_parse_creation_date_from_filename(media_file)
     _apply_creation_date_fallbacks(media_file, file_path)
 
     # Modification date
