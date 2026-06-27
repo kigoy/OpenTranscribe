@@ -45,7 +45,11 @@ load_env() {
   export SEARCH_BACKEND="${SEARCH_BACKEND:-sqlite}"
   export FORCE_CPU_MODE="${FORCE_CPU_MODE:-true}"
   export USE_GPU="${USE_GPU:-false}"
-  export TORCH_DEVICE="${TORCH_DEVICE:-cpu}"
+  # Torch runs PyAnnote diarization (no CUDA on this host). Apple MPS is the fast
+  # path; CPU left "Analyzing speaker patterns" the multi-minute bottleneck.
+  # MPS_FALLBACK routes any op MPS lacks back to CPU instead of crashing.
+  export TORCH_DEVICE="${TORCH_DEVICE:-mps}"
+  export PYTORCH_ENABLE_MPS_FALLBACK="${PYTORCH_ENABLE_MPS_FALLBACK:-1}"
   export COMPUTE_TYPE="${COMPUTE_TYPE:-int8}"
   export WHISPER_MODEL="${WHISPER_MODEL:-base}"
   export WHISPER_COMPUTE_TYPE="${WHISPER_COMPUTE_TYPE:-int8}"
